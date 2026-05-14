@@ -2,7 +2,7 @@
   const data = window.__MATCH_SITE_DATA__;
   const app = document.getElementById("app");
   const brandButton = document.getElementById("brandButton");
-  const STORAGE_KEY = "gal-match-keywords-v3";
+  const STORAGE_KEY = "gal-match-keywords-v5";
 
   if (!data || !app) {
     return;
@@ -139,12 +139,38 @@
 
     const top = ranked[0];
     return {
+      mode: "quiz",
       userVector,
       userAppearanceVector,
       top,
       ranked,
       summary: buildUserSummary(userVector),
       reasons: buildMatchReasons(userVector, userAppearanceVector, top),
+    };
+  }
+
+  function computeFateResult() {
+    const ranked = pickRandomHomePreview(heroes, Math.min(8, heroes.length))
+      .map((hero, index) => ({
+        ...hero,
+        matchScore: index === 0 ? 1 : 0,
+        matchPercent: Math.max(88, 99 - index),
+        fateRank: index + 1,
+      }));
+    const top = ranked[0];
+
+    return {
+      mode: "fate",
+      userVector: zeroVector(),
+      userAppearanceVector: zeroAppearanceVector(),
+      top,
+      ranked,
+      summary: "缘分至上，这次让命运直接替你抽一位专属旮旯女友。",
+      reasons: [
+        `今天被抽中的就是 ${top.displayName || top.originalName}。`,
+        "没有题目，没有计算，只有一次很干脆的邂逅。",
+        "点开主页看看她，也许这就是该补的那条线。",
+      ],
     };
   }
 
@@ -174,18 +200,68 @@
     const directionalScore = (clamp(cosineBase, -1, 1) + 1) / 2;
     let appearanceDistance = 0;
     let appearanceWeightTotal = 0;
+    let appearancePenalty = 0;
+    let appearanceBonus = 0;
+    let hardHairToneMismatch = false;
     for (const key of appearanceKeys) {
       const userValue = userAppearanceVector[key] || 0;
       const heroValue = heroAppearanceProfile[key] || 0;
-      const weight = getAppearanceAxis(key)?.weight || 0;
+      const axis = getAppearanceAxis(key);
+      const weight = axis?.weight || 0;
       appearanceDistance += (Math.abs(userValue - heroValue) / 2) * weight;
       appearanceWeightTotal += weight;
+
+      const preferenceStrength = Math.abs(userValue);
+      const heroStrength = Math.abs(heroValue);
+      const sameSide = (userValue === 0) || (heroValue === 0) || Math.sign(userValue) === Math.sign(heroValue);
+      const mismatch = Math.abs(userValue - heroValue) / 2;
+      const axisPenaltyWeight = key === "hair_tone" ? 2.8 : key === "hair_length" ? 1.7 : 1.2;
+      const axisBonusWeight = key === "hair_tone" ? 0.55 : 0.32;
+
+      if (preferenceStrength >= 0.34 && !sameSide) {
+        appearancePenalty += mismatch * weight * axisPenaltyWeight * preferenceStrength;
+      }
+
+      if (preferenceStrength >= 0.45 && heroStrength < 0.12) {
+        appearancePenalty += weight * preferenceStrength * (key === "hair_tone" ? 1.15 : 0.45);
+      }
+
+      if (preferenceStrength >= 0.28 && sameSide) {
+        appearanceBonus += Math.min(preferenceStrength, heroStrength) * weight * axisBonusWeight;
+      }
+
+      if (
+        key === "hair_tone"
+        && preferenceStrength >= 0.45
+        && heroStrength >= 0.45
+        && !sameSide
+      ) {
+        hardHairToneMismatch = true;
+      }
     }
     const appearanceScore = appearanceWeightTotal
       ? 1 - appearanceDistance / appearanceWeightTotal
       : 0.5;
+    const penaltyScore = appearanceWeightTotal
+      ? appearancePenalty / appearanceWeightTotal
+      : 0;
+    const bonusScore = appearanceWeightTotal
+      ? appearanceBonus / appearanceWeightTotal
+      : 0;
 
-    return round((distanceScore * 0.72) + (directionalScore * 0.14) + (appearanceScore * 0.14), 4);
+    let finalScore = (
+      (distanceScore * 0.5)
+      + (directionalScore * 0.08)
+      + (appearanceScore * 0.42)
+      + (bonusScore * 0.12)
+      - (penaltyScore * 0.56)
+    );
+
+    if (hardHairToneMismatch) {
+      finalScore = Math.min(finalScore, 0.56);
+    }
+
+    return round(clamp(finalScore, 0, 1), 4);
   }
 
   function buildUserSummary(userVector) {
@@ -352,7 +428,51 @@
       app.innerHTML = renderHome();
     }
 
+    applyDynamicText();
     bindEvents();
+  }
+
+  function applyDynamicText() {
+    const subtitle = app.querySelector(".hero-subtitle");
+    if (subtitle) {
+      subtitle.textContent = "作为旮旯高手的你，来匹配你的专属旮旯女友吧！";
+    }
+
+    const actions = app.querySelector(".hero-actions");
+    const startButton = actions?.querySelector("[data-action='start-quiz']");
+    if (actions && startButton && !actions.querySelector("[data-action='fate-match']")) {
+      startButton.insertAdjacentHTML(
+        "afterend",
+        '<button class="button button-fate" data-action="fate-match" type="button">缘分至上</button>',
+      );
+    }
+
+    const resultActions = app.querySelector(".result-actions");
+    const restartButton = resultActions?.querySelector("[data-action='restart-quiz']");
+    if (resultActions && restartButton && !resultActions.querySelector("[data-action='fate-match']")) {
+      restartButton.insertAdjacentHTML(
+        "afterend",
+        '<button class="button button-fate" data-action="fate-match" type="button">再抽一次缘分</button>',
+      );
+    }
+  }
+
+  function renderPreservingScroll(focusGallerySearch = false) {
+    const scrollY = window.scrollY;
+    render();
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ top: scrollY, left: 0, behavior: "auto" });
+      if (!focusGallerySearch) {
+        return;
+      }
+      const input = document.getElementById("gallerySearch");
+      if (!input) {
+        return;
+      }
+      input.focus();
+      const end = input.value.length;
+      input.setSelectionRange?.(end, end);
+    });
   }
 
   function renderHome() {
@@ -489,6 +609,7 @@
     }
 
     const top = state.result.top;
+    const isFate = state.result.mode === "fate";
     const topMatches = state.result.ranked.slice(0, 8);
     const userVectorChips = dimensionKeys
       .map((key) => {
@@ -518,7 +639,7 @@
             <div class="ranking-body">
               <div class="ranking-top">
                 <div class="ranking-name">#${index + 1} ${escapeHtml(hero.displayName || hero.originalName)}</div>
-                <div class="ranking-score">${hero.matchPercent}%</div>
+                <div class="ranking-score">${formatResultScore(hero, isFate)}</div>
               </div>
               <div class="ranking-game">${escapeHtml(hero.gameTitleCn || hero.gameTitle)}</div>
               <div class="tiny-tags">
@@ -533,6 +654,9 @@
         `,
       )
       .join("");
+    const resultPills = isFate
+      ? `<span class="pill">缘分至上</span><span class="pill">随机邂逅</span><span class="pill">${data.meta.heroCount} 位女主库</span>`
+      : `${userVectorChips}${appearanceChips}`;
 
     return `
       <section class="panel section-panel">
@@ -543,19 +667,19 @@
           </div>
         </div>
 
-        <div class="pill-row result-pills">${userVectorChips}${appearanceChips}</div>
+        <div class="pill-row result-pills">${resultPills}</div>
 
         <div class="result-hero">
           <div class="result-figure">
             <img src="${top.image}" alt="${escapeHtml(top.originalName)}" loading="eager">
             <div class="compat-badge">
               <span>匹配度</span>
-              <strong>${top.matchPercent}%</strong>
+              <strong>${isFate ? "天选" : `${top.matchPercent}%`}</strong>
             </div>
           </div>
 
           <div>
-            <p class="eyebrow">Top Match</p>
+            <p class="eyebrow">${isFate ? "Fate Match" : "Top Match"}</p>
             <h3 class="result-title">${escapeHtml(top.displayName || top.originalName)}</h3>
             <p class="result-meta">
               ${top.supportName ? `${escapeHtml(top.supportName)}<br>` : ""}
@@ -607,6 +731,13 @@
 
       ${renderGallerySection(false)}
     `;
+  }
+
+  function formatResultScore(hero, isFate) {
+    if (isFate) {
+      return hero.fateRank === 1 ? "缘分" : "邂逅";
+    }
+    return `${hero.matchPercent}%`;
   }
 
   function renderGallerySection(openOnHome) {
@@ -810,6 +941,10 @@
       button.addEventListener("click", startQuiz);
     });
 
+    document.querySelectorAll("[data-action='fate-match']").forEach((button) => {
+      button.addEventListener("click", fateMatch);
+    });
+
     document.querySelectorAll("[data-action='show-gallery']").forEach((button) => {
       button.addEventListener("click", () => {
         state.showGallery = true;
@@ -884,7 +1019,7 @@
       gallerySearch.addEventListener("input", (event) => {
         state.gallerySearch = event.target.value;
         state.galleryLimit = 20;
-        render();
+        renderPreservingScroll(true);
       });
     }
   }
@@ -897,6 +1032,16 @@
     render();
   }
 
+  function fateMatch() {
+    state.result = computeFateResult();
+    state.view = "result";
+    state.showGallery = false;
+    state.galleryLimit = 20;
+    render();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+    showCelebration();
+  }
+
   function finishQuiz() {
     if (!allQuestionsCompleted()) {
       return;
@@ -907,6 +1052,21 @@
     state.galleryLimit = 20;
     render();
     window.scrollTo({ top: 0, behavior: "smooth" });
+    showCelebration();
+  }
+
+  function showCelebration() {
+    document.querySelector(".celebration-burst")?.remove();
+    const burst = document.createElement("div");
+    burst.className = "celebration-burst";
+    burst.setAttribute("aria-hidden", "true");
+    burst.innerHTML = `
+      <span>🎉</span>
+      <span>❤</span>
+      <span>🎉</span>
+    `;
+    document.body.appendChild(burst);
+    window.setTimeout(() => burst.remove(), 1300);
   }
 
   function copyResult() {

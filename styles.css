@@ -222,6 +222,12 @@ img {
   border: 1px solid rgba(71, 63, 78, 0.12);
 }
 
+.button-fate {
+  background: linear-gradient(135deg, #f8d487 0%, #f1a3a3 100%);
+  color: #3a2830;
+  box-shadow: 0 14px 30px rgba(213, 148, 94, 0.2);
+}
+
 .button-ghost {
   background: transparent;
   color: var(--ink);
@@ -863,6 +869,63 @@ img {
   color: var(--muted);
   font-size: 0.84rem;
   line-height: 1.8;
+}
+
+.celebration-burst {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  animation: celebrationFade 1.3s ease forwards;
+}
+
+.celebration-burst span {
+  position: absolute;
+  font-size: clamp(2rem, 8vw, 4.8rem);
+  filter: drop-shadow(0 12px 28px rgba(95, 55, 58, 0.18));
+  animation: celebrationPop 1.05s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.celebration-burst span:nth-child(1) {
+  translate: -72px -8px;
+}
+
+.celebration-burst span:nth-child(2) {
+  translate: 0 -28px;
+  animation-delay: 0.06s;
+}
+
+.celebration-burst span:nth-child(3) {
+  translate: 72px -8px;
+  animation-delay: 0.12s;
+}
+
+@keyframes celebrationPop {
+  0% {
+    opacity: 0;
+    scale: 0.35;
+    transform: translateY(18px) rotate(-8deg);
+  }
+  42% {
+    opacity: 1;
+    scale: 1;
+  }
+  100% {
+    opacity: 0;
+    scale: 1.18;
+    transform: translateY(-34px) rotate(8deg);
+  }
+}
+
+@keyframes celebrationFade {
+  0%, 74% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
 }
 
 @media (max-width: 1024px) {
