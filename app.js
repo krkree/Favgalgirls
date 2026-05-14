@@ -126,7 +126,7 @@
 
     const userVector = normalizeUserVector(rawVector);
     const userAppearanceVector = normalizeAppearanceVector(rawAppearanceVector);
-    const ranked = heroes
+    const ranked = randomizeTiedRanks(heroes
       .map((hero) => {
         const score = similarity(userVector, hero.vector, userAppearanceVector, hero.appearanceProfile || {});
         return {
@@ -135,7 +135,7 @@
           matchPercent: Math.round(score * 100),
         };
       })
-      .sort((a, b) => b.matchScore - a.matchScore);
+      .sort((a, b) => b.matchScore - a.matchScore));
 
     const top = ranked[0];
     return {
@@ -172,6 +172,36 @@
         "点开主页看看她，也许这就是该补的那条线。",
       ],
     };
+  }
+
+  function randomizeTiedRanks(rankedHeroes) {
+    const output = [];
+
+    for (let index = 0; index < rankedHeroes.length;) {
+      const currentScore = rankedHeroes[index].matchScore;
+      const tiedGroup = [];
+
+      while (index < rankedHeroes.length && rankedHeroes[index].matchScore === currentScore) {
+        tiedGroup.push(rankedHeroes[index]);
+        index += 1;
+      }
+
+      if (tiedGroup.length > 1) {
+        shuffleInPlace(tiedGroup);
+      }
+
+      output.push(...tiedGroup);
+    }
+
+    return output;
+  }
+
+  function shuffleInPlace(list) {
+    for (let index = list.length - 1; index > 0; index -= 1) {
+      const swapIndex = Math.floor(Math.random() * (index + 1));
+      [list[index], list[swapIndex]] = [list[swapIndex], list[index]];
+    }
+    return list;
   }
 
   function similarity(userVector, heroVector, userAppearanceVector, heroAppearanceProfile) {
@@ -908,12 +938,7 @@
   }
 
   function pickRandomHomePreview(list, count) {
-    const pool = [...list];
-    for (let index = pool.length - 1; index > 0; index -= 1) {
-      const swapIndex = Math.floor(Math.random() * (index + 1));
-      [pool[index], pool[swapIndex]] = [pool[swapIndex], pool[index]];
-    }
-    return pool.slice(0, count);
+    return shuffleInPlace([...list]).slice(0, count);
   }
 
   function toggleKeyword(keywordId) {
