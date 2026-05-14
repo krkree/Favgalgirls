@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>角色中文名编辑器</title>
+  <meta name="description" content="用于补充和修改 Gal 女主中文名的本地编辑页。">
+  <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="name-editor.css">
+</head>
+<body>
+  <div class="page-bg" aria-hidden="true">
+    <div class="page-glow page-glow-a"></div>
+    <div class="page-glow page-glow-b"></div>
+    <div class="page-grid"></div>
+  </div>
+
+  <div class="page-shell">
+    <header class="topbar">
+      <button class="brand-button" id="homeLink" type="button">
+        <span class="brand-mark">Name Editor</span>
+        <span class="brand-copy">角色中文名编辑器</span>
+      </button>
+      <div class="topbar-note">浏览器内编辑，导出 JSON 后再回灌到项目根目录</div>
+    </header>
+
+    <main id="editorApp"></main>
+  </div>
+
+  <script src="data/name-editor-data.js"></script>
+  <script src="name-editor.js"></script>
+</body>
+</html>
