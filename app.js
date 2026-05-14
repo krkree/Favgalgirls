@@ -2,21 +2,26 @@
   const data = window.__MATCH_SITE_DATA__;
   const app = document.getElementById("app");
   const brandButton = document.getElementById("brandButton");
-  const STORAGE_KEY = "gal-match-quiz-state-v2";
+  const STORAGE_KEY = "gal-match-keywords-v3";
 
   if (!data || !app) {
     return;
   }
 
   const dimensions = data.dimensions || [];
+  const appearanceAxes = data.appearanceAxes || [];
+  const questions = data.questions || [];
+  const heroes = data.heroes || [];
   const dimensionKeys = dimensions.map((item) => item.key);
-  const coreDimensionKeys = dimensions.filter((item) => item.group !== "appearance").map((item) => item.key);
-  const appearanceDimensionKeys = dimensions.filter((item) => item.group === "appearance").map((item) => item.key);
+  const appearanceKeys = appearanceAxes.map((item) => item.key);
   const dimensionMap = new Map(dimensions.map((item) => [item.key, item]));
-  const sliderQuestionCount = data.questions.filter((question) => question.type === "slider").length;
-  const appearanceQuestionCount = data.questions.filter((question) => question.group === "appearance").length;
-  const userVectorMax = computeUserVectorMax(data.questions, dimensionKeys);
-  const homePreview = pickHomePreview(data.heroes, 8);
+  const appearanceMap = new Map(appearanceAxes.map((item) => [item.key, item]));
+  const questionKeywordMaps = questions.map(
+    (question) => new Map((question.keywords || []).map((keyword) => [keyword.id, keyword])),
+  );
+  const userVectorMax = computeUserVectorMax("effects", dimensionKeys);
+  const userAppearanceMax = computeUserVectorMax("appearanceEffects", appearanceKeys);
+  const homePreview = pickRandomHomePreview(heroes, 8);
 
   const state = loadState() || {
     view: "home",
@@ -27,9 +32,9 @@
     gallerySearch: "",
     galleryLimit: 20,
   };
-  sanitizeState();
 
-  if (state.view === "result" && Array.isArray(state.answers) && state.answers.length === data.questions.length) {
+  sanitizeState();
+  if (state.view === "result" && allQuestionsCompleted()) {
     state.result = computeQuizResult();
   }
 
@@ -37,47 +42,42 @@
     return Object.fromEntries(dimensionKeys.map((key) => [key, 0]));
   }
 
+  function zeroAppearanceVector() {
+    return Object.fromEntries(appearanceKeys.map((key) => [key, 0]));
+  }
+
   function getDimension(key) {
     return dimensionMap.get(key);
   }
 
-  function getSliderSpan(question) {
-    return Math.max(Math.abs(question?.min ?? -10), Math.abs(question?.max ?? 10), 1);
+  function getAppearanceAxis(key) {
+    return appearanceMap.get(key);
   }
 
-  function getStoredAnswer(questionIndex) {
+  function getQuestionSelection(questionIndex) {
     const answer = state.answers[questionIndex];
-    return typeof answer === "number" && Number.isFinite(answer) ? answer : null;
+    return Array.isArray(answer) ? [...answer] : [];
   }
 
-  function getSliderAnswer(questionIndex, question) {
-    const stored = getStoredAnswer(questionIndex);
-    if (stored === null) {
-      return 0;
-    }
-
-    const min = question?.min ?? -10;
-    const max = question?.max ?? 10;
-    return clamp(stored, min, max);
+  function allQuestionsCompleted() {
+    return questions.every((question, index) => {
+      const selected = getQuestionSelection(index);
+      return selected.length >= (question.minSelections || 0);
+    });
   }
 
-  function computeUserVectorMax(questions, keys) {
+  function computeUserVectorMax(fieldName, keys) {
     const totals = Object.fromEntries(keys.map((key) => [key, 0]));
 
     for (const question of questions) {
-      if (question.type === "slider") {
-        for (const key of keys) {
-          totals[key] += Math.abs((question.effects && question.effects[key]) || 0);
-        }
-        continue;
-      }
-
+      const keywords = question.keywords || [];
+      const limit = Math.min(question.maxSelections || keywords.length, keywords.length);
       for (const key of keys) {
-        const peak = Math.max(
-          ...question.options.map((option) => Math.abs((option.effects && option.effects[key]) || 0)),
-          0,
-        );
-        totals[key] += peak;
+        const values = keywords
+          .map((keyword) => Math.abs((keyword[fieldName] && keyword[fieldName][key]) || 0))
+          .sort((a, b) => b - a)
+          .slice(0, limit);
+        totals[key] += values.reduce((sum, value) => sum + value, 0);
       }
     }
 
@@ -86,44 +86,49 @@
 
   function normalizeUserVector(rawVector) {
     const normalized = {};
-
     for (const key of dimensionKeys) {
       const divisor = userVectorMax[key] || 1;
-      const value = rawVector[key] / divisor;
-      normalized[key] = round(clamp(value, -1, 1), 3);
+      normalized[key] = round(clamp(rawVector[key] / divisor, -1, 1), 3);
     }
+    return normalized;
+  }
 
+  function normalizeAppearanceVector(rawVector) {
+    const normalized = {};
+    for (const key of appearanceKeys) {
+      const divisor = userAppearanceMax[key] || 1;
+      normalized[key] = round(clamp(rawVector[key] / divisor, -1, 1), 3);
+    }
     return normalized;
   }
 
   function computeQuizResult() {
     const rawVector = zeroVector();
+    const rawAppearanceVector = zeroAppearanceVector();
 
-    data.questions.forEach((question, questionIndex) => {
-      if (question.type === "slider") {
-        const sliderValue = getSliderAnswer(questionIndex, question);
-        const scale = sliderValue / getSliderSpan(question);
-        for (const key of dimensionKeys) {
-          rawVector[key] += ((question.effects && question.effects[key]) || 0) * scale;
+    questions.forEach((question, questionIndex) => {
+      const selected = getQuestionSelection(questionIndex);
+      const keywordMap = questionKeywordMaps[questionIndex];
+
+      selected.forEach((keywordId) => {
+        const keyword = keywordMap.get(keywordId);
+        if (!keyword) {
+          return;
         }
-        return;
-      }
-
-      const answerIndex = state.answers[questionIndex];
-      const option = question.options?.[answerIndex];
-      if (!option) {
-        return;
-      }
-
-      for (const key of dimensionKeys) {
-        rawVector[key] += (option.effects && option.effects[key]) || 0;
-      }
+        for (const key of dimensionKeys) {
+          rawVector[key] += (keyword.effects && keyword.effects[key]) || 0;
+        }
+        for (const key of appearanceKeys) {
+          rawAppearanceVector[key] += (keyword.appearanceEffects && keyword.appearanceEffects[key]) || 0;
+        }
+      });
     });
 
     const userVector = normalizeUserVector(rawVector);
-    const ranked = data.heroes
+    const userAppearanceVector = normalizeAppearanceVector(rawAppearanceVector);
+    const ranked = heroes
       .map((hero) => {
-        const score = similarity(userVector, hero.vector);
+        const score = similarity(userVector, hero.vector, userAppearanceVector, hero.appearanceProfile || {});
         return {
           ...hero,
           matchScore: score,
@@ -135,14 +140,15 @@
     const top = ranked[0];
     return {
       userVector,
+      userAppearanceVector,
       top,
       ranked,
       summary: buildUserSummary(userVector),
-      reasons: buildMatchReasons(userVector, top),
+      reasons: buildMatchReasons(userVector, userAppearanceVector, top),
     };
   }
 
-  function similarity(userVector, heroVector) {
+  function similarity(userVector, heroVector, userAppearanceVector, heroAppearanceProfile) {
     let weightedDistance = 0;
     let weightTotal = 0;
     let dot = 0;
@@ -166,118 +172,120 @@
       ? dot / (Math.sqrt(userNorm) * Math.sqrt(heroNorm))
       : 0;
     const directionalScore = (clamp(cosineBase, -1, 1) + 1) / 2;
-    return round((distanceScore * 0.82) + (directionalScore * 0.18), 4);
+    let appearanceDistance = 0;
+    let appearanceWeightTotal = 0;
+    for (const key of appearanceKeys) {
+      const userValue = userAppearanceVector[key] || 0;
+      const heroValue = heroAppearanceProfile[key] || 0;
+      const weight = getAppearanceAxis(key)?.weight || 0;
+      appearanceDistance += (Math.abs(userValue - heroValue) / 2) * weight;
+      appearanceWeightTotal += weight;
+    }
+    const appearanceScore = appearanceWeightTotal
+      ? 1 - appearanceDistance / appearanceWeightTotal
+      : 0.5;
+
+    return round((distanceScore * 0.72) + (directionalScore * 0.14) + (appearanceScore * 0.14), 4);
   }
 
   function buildUserSummary(userVector) {
-    const sortedCore = [...coreDimensionKeys]
-      .map((key) => ({ key, value: userVector[key] }))
+    const sorted = [...dimensionKeys]
+      .map((key) => ({ key, value: userVector[key] || 0 }))
       .sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
-    const sortedAppearance = [...appearanceDimensionKeys]
-      .map((key) => ({ key, value: userVector[key] }))
-      .sort((a, b) => Math.abs(b.value) - Math.abs(a.value));
-
-    const labels = sortedCore.slice(0, 2).map((item) => profilePhrase(item.key, item.value));
-    const appearanceLabel = sortedAppearance[0] ? profilePhrase(sortedAppearance[0].key, sortedAppearance[0].value) : null;
-
-    if (appearanceLabel) {
-      return `你的整体心动频率更偏向 ${labels.join(" / ")}；外观上会更吃 ${appearanceLabel}。`;
-    }
-
-    return `你的整体心动频率更偏向 ${labels.join(" / ")}。`;
+    const labels = sorted.slice(0, 3).map((item) => profilePhrase(item.key, item.value));
+    return `你更容易被 ${labels.join(" / ")} 这三种频率击中。`;
   }
 
-  function buildMatchReasons(userVector, hero) {
+  function buildMatchReasons(userVector, userAppearanceVector, hero) {
     if (!hero) {
       return [];
     }
 
-    const aligned = dimensions
-      .map((key) => {
-        const dimension = typeof key === "string" ? getDimension(key) : key;
-        const actualKey = typeof key === "string" ? key : key.key;
-        const difference = Math.abs((userVector[actualKey] || 0) - (hero.vector[actualKey] || 0));
-        return {
-          key: actualKey,
-          group: dimension?.group || "core",
-          difference,
-          userValue: userVector[actualKey],
-          heroValue: hero.vector[actualKey],
-        };
-      })
+    const coreReasons = [...dimensionKeys]
+      .map((key) => ({
+        key,
+        difference: Math.abs((userVector[key] || 0) - (hero.vector[key] || 0)),
+        userValue: userVector[key] || 0,
+      }))
       .sort((a, b) => a.difference - b.difference)
-      ;
+      .slice(0, 3)
+      .map((item) => axisReason(item.key, item.userValue, hero));
 
-    const picked = [
-      ...aligned.filter((item) => item.group !== "appearance").slice(0, 2),
-      ...aligned.filter((item) => item.group === "appearance").slice(0, 1),
-    ];
+    const appearanceReason = [...appearanceKeys]
+      .map((key) => ({
+        key,
+        difference: Math.abs((userAppearanceVector[key] || 0) - ((hero.appearanceProfile && hero.appearanceProfile[key]) || 0)),
+        userValue: userAppearanceVector[key] || 0,
+      }))
+      .sort((a, b) => a.difference - b.difference)[0];
 
-    return picked.map((item) => axisReason(item.key, item.userValue, hero));
+    if (appearanceReason && Math.abs(appearanceReason.userValue) > 0.12) {
+      coreReasons.push(appearanceAxisReason(appearanceReason.key, appearanceReason.userValue, hero));
+    }
+    return coreReasons;
   }
 
   function axisReason(key, userValue, hero) {
-    const dimension = getDimension(key);
-    const polarity = userValue >= 0 ? "high" : "low";
-    const label = dimension ? dimension[polarity] : key;
-
     if (key === "social") {
       return userValue >= 0
-        ? `你们都更容易被有来有回、气氛鲜活的相处方式吸引，${hero.originalName} 的社交节奏会比较对你胃口。`
-        : `你更吃慢热型的靠近方式，而 ${hero.originalName} 也属于不需要一直吵闹就能留下存在感的类型。`;
+        ? `你会被更主动、更有回应感的相处方式吸引，${hero.originalName} 的社交节奏更容易和你对上。`
+        : `你更吃慢热型靠近，${hero.originalName} 这种不需要一直热闹也能留下存在感的频率会更合你胃口。`;
     }
     if (key === "warmth") {
       return userValue >= 0
-        ? `你在关系里更看重温度感和被接住的安心感，这一点和 ${hero.originalName} 的气质很贴。`
-        : `你对“克制里带情绪”的角色会更有感觉，${hero.originalName} 身上的距离感反而会让你上头。`;
+        ? `你在关系里更看重温度和被接住的感觉，所以 ${hero.originalName} 身上的柔软感会很加分。`
+        : `你会被带一点克制和疏离感的人吸住，${hero.originalName} 这种不过度外露的气质更容易让你上头。`;
     }
     if (key === "energy") {
       return userValue >= 0
-        ? `你更容易被鲜活、有互动感的恋爱节奏打动，而 ${hero.originalName} 正好自带这种轻快感。`
-        : `你更偏爱安静、稳定、能慢慢沉进去的陪伴方式，${hero.originalName} 的节奏和你比较同步。`;
+        ? `你偏爱鲜活、有互动感的恋爱节奏，${hero.originalName} 的活力会更容易把你带进去。`
+        : `你更喜欢安静、稳定、慢慢沉进去的陪伴方式，${hero.originalName} 的节奏会让你觉得舒服。`;
     }
     if (key === "dream") {
       return userValue >= 0
-        ? `你会对带一点剧情感、浪漫感的人更心动，${hero.originalName} 正好有这种“像故事开始”的味道。`
-        : `你更喜欢清醒、踏实、能落地的相处方式，${hero.originalName} 的风格会让你觉得安心。`;
+        ? `你会对带点梦感和故事感的人特别有反应，${hero.originalName} 正好有这种像剧情开始的味道。`
+        : `你更吃清醒、踏实、能落地的相处方式，所以 ${hero.originalName} 的理性感会更对你胃口。`;
     }
     if (key === "mystery") {
       return userValue >= 0
-        ? `你对那种“越了解越想继续靠近”的神秘感很有反应，${hero.originalName} 在这点上很容易击中你。`
-        : `你更喜欢表达直接、相处不拧巴的人，而 ${hero.originalName} 的打开方式不会让你太累。`;
+        ? `你对“越靠近越想继续了解”的神秘感反应很强，${hero.originalName} 在这条线上很容易击中你。`
+        : `你更喜欢表达直接、不需要过度猜测的人，${hero.originalName} 的打开方式会让你轻松很多。`;
     }
     if (key === "maturity") {
       return userValue >= 0
         ? `你明显会被更稳、更有分寸感的气质吸引，所以 ${hero.originalName} 的成熟感会很加分。`
-        : `你会更偏爱带点青涩、少女感更强的心动体验，${hero.originalName} 正好落在这个区间。`;
+        : `你更容易被偏青涩、偏少女感的心动击中，${hero.originalName} 刚好落在这个区间。`;
     }
+    return `${hero.originalName} 和你的这条维度频率很接近。`;
+  }
+
+  function appearanceAxisReason(key, userValue, hero) {
     if (key === "hair_length") {
       return userValue >= 0
-        ? `外观上你会更吃长发那种柔和、延展的观感，而 ${hero.originalName} 刚好比较贴这条线。`
-        : `你对短发那种利落、轻快的第一眼印象更有感觉，而 ${hero.originalName} 在这点上会更对你胃口。`;
+        ? `${hero.originalName} 的长发观感更贴近你的外观偏好。`
+        : `${hero.originalName} 这种更利落的发型感会更容易第一眼戳中你。`;
     }
     if (key === "hair_tone") {
       return userValue >= 0
-        ? `你会更容易被浅亮发色的存在感吸引，${hero.originalName} 的视觉印象刚好落在这边。`
-        : `你会更吃深发那种稳定、耐看的观感，而 ${hero.originalName} 在这条偏好上和你很接近。`;
+        ? `你会更容易被浅亮发色吸住，而 ${hero.originalName} 正好贴近这条线。`
+        : `你更吃深色头发的耐看感，${hero.originalName} 在外观上会更顺眼。`;
     }
     if (key === "legwear") {
       return userValue >= 0
-        ? `你会对丝袜、长袜这类更完整的腿部造型有反应，${hero.originalName} 在外观风格上正好贴近这一点。`
-        : `你更偏爱轻装、露腿感更强的利落观感，所以 ${hero.originalName} 会更容易第一眼击中你。`;
+        ? `${hero.originalName} 的腿部造型更贴近你偏爱的丝袜长袜感。`
+        : `${hero.originalName} 更接近你喜欢的轻装光腿感。`;
     }
     if (key === "ornament") {
       return userValue >= 0
-        ? `你会被蝴蝶结、发饰、甜系点缀这些更有装饰感的打扮吸引，而 ${hero.originalName} 在这方面比较加分。`
-        : `你更喜欢简洁、干净、不过分堆细节的打扮方式，${hero.originalName} 的视觉风格会让你更舒服。`;
+        ? `${hero.originalName} 身上的甜系点缀感，会更对你的外观口味。`
+        : `${hero.originalName} 这种更简洁的装饰度，会更合你的审美。`;
     }
     if (key === "visual_maturity") {
       return userValue >= 0
-        ? `外观气质上你会更吃姐姐感，所以 ${hero.originalName} 那种偏成熟的视觉印象会更容易拿分。`
-        : `你会更偏爱轻盈、青涩一点的第一眼心动，而 ${hero.originalName} 刚好靠近这个方向。`;
+        ? `${hero.originalName} 的外观气质更偏姐姐感，这一点会很加分。`
+        : `${hero.originalName} 更贴近你偏爱的少女感滤镜。`;
     }
-
-    return `${label} 这条轴上，你和 ${hero.originalName} 的频率很接近。`;
+    return `${hero.originalName} 的外观气质和你的偏好也很接近。`;
   }
 
   function profilePhrase(key, value) {
@@ -286,20 +294,6 @@
       return key;
     }
     return value >= 0 ? dimension.high : dimension.low;
-  }
-
-  function render() {
-    saveState();
-
-    if (state.view === "quiz") {
-      app.innerHTML = renderQuiz();
-    } else if (state.view === "result") {
-      app.innerHTML = renderResult();
-    } else {
-      app.innerHTML = renderHome();
-    }
-
-    bindEvents();
   }
 
   function sanitizeState() {
@@ -314,27 +308,51 @@
     if (!Number.isInteger(state.currentQuestion) || state.currentQuestion < 0) {
       state.currentQuestion = 0;
     }
-
-    if (state.currentQuestion >= data.questions.length) {
-      state.currentQuestion = Math.max(0, data.questions.length - 1);
+    if (state.currentQuestion >= questions.length) {
+      state.currentQuestion = Math.max(0, questions.length - 1);
     }
+
+    state.answers = questions.map((question, index) => {
+      const previous = Array.isArray(state.answers[index]) ? state.answers[index] : [];
+      const keywordMap = questionKeywordMaps[index];
+      const unique = [];
+      for (const keywordId of previous) {
+        if (!keywordMap.has(keywordId) || unique.includes(keywordId)) {
+          continue;
+        }
+        unique.push(keywordId);
+        if (unique.length >= (question.maxSelections || unique.length)) {
+          break;
+        }
+      }
+      return unique;
+    });
 
     if (typeof state.gallerySearch !== "string") {
       state.gallerySearch = "";
     }
-
     if (!Number.isFinite(state.galleryLimit) || state.galleryLimit < 20) {
       state.galleryLimit = 20;
     }
 
-    if (state.view === "result" && state.answers.length !== data.questions.length) {
+    if (state.view === "result" && !allQuestionsCompleted()) {
       state.view = "home";
       state.result = null;
     }
+  }
 
-    if (state.view === "quiz" && state.answers.length > data.questions.length) {
-      state.answers = state.answers.slice(0, data.questions.length);
+  function render() {
+    saveState();
+
+    if (state.view === "quiz") {
+      app.innerHTML = renderQuiz();
+    } else if (state.view === "result") {
+      app.innerHTML = renderResult();
+    } else {
+      app.innerHTML = renderHome();
     }
+
+    bindEvents();
   }
 
   function renderHome() {
@@ -353,7 +371,11 @@
     return `
       <section class="panel hero-panel">
         <div class="hero-copy">
-          <h1 class="hero-title">来做题选你的<br>专属 Galgame 老婆！</h1>
+          <h1 class="hero-title">来挑关键词，<br>选你的专属 Galgame 老婆！</h1>
+          <p class="hero-subtitle">
+            不再做俗套场景题。每一轮只要从漂浮词池里挑出最戳你的几个词，
+            我们会把它们折成六维心动图，再和整套女主库逐个对频。
+          </p>
           <div class="hero-actions">
             <button class="button button-primary" data-action="start-quiz" type="button">开始测试</button>
             <button class="button button-secondary" data-action="show-gallery" type="button">先看全部女主</button>
@@ -381,171 +403,110 @@
       <section class="panel section-panel">
         <div class="section-head">
           <div>
-            <h2 class="section-title">这个测试怎么做</h2>
-            <div class="section-note">每题只要选最像你的反应，不需要刻意“选最优”。答案越本能，匹配越准。</div>
+            <h2 class="section-title">现在的匹配怎么做</h2>
+            <div class="section-note">前 6 轮看心动频率，后 5 轮补外观偏好，最后一起和女主库做综合匹配。</div>
           </div>
         </div>
         <div class="pill-row">
-          <span class="pill">题目设计尽量避开直球人设提问</span>
-          <span class="pill">更偏生活偏好 / 恋爱氛围 / 关系处理方式</span>
-          <span class="pill">结果会给出最匹配女主 + 前排候选</span>
+          <span class="pill">关键词比场景题更直观</span>
+          <span class="pill">六维向量只看人格频率</span>
+          <span class="pill">外观题重新加入</span>
         </div>
       </section>
 
       ${renderGallerySection(true)}
-
-      <div class="footer-note">
-        数据来源于你整理出的 VNDB 角色资料，本页为非商业风格测试站样板。若用于公开传播，建议在结果页补充“仅供娱乐”的说明。
-      </div>
     `;
   }
 
   function renderQuiz() {
-    const question = data.questions[state.currentQuestion];
-    const selectedIndex = state.answers[state.currentQuestion];
-    const currentSliderValue = getSliderAnswer(state.currentQuestion, question);
-    const progress = ((state.currentQuestion + 1) / data.questions.length) * 100;
+    const question = questions[state.currentQuestion];
+    const selected = getQuestionSelection(state.currentQuestion);
+    const progress = ((state.currentQuestion + 1) / questions.length) * 100;
+    const remainingHint = selected.length >= question.minSelections
+      ? `已选 ${selected.length} 个，还可以再挑 ${Math.max((question.maxSelections || 0) - selected.length, 0)} 个`
+      : `至少选 ${question.minSelections} 个，当前已选 ${selected.length} 个`;
     const eyebrow = question.group === "appearance"
-      ? `外观偏好 ${String(state.currentQuestion + 1).padStart(2, "0")}`
-      : (question.type === "slider"
-        ? `滑杆题 ${String(state.currentQuestion + 1).padStart(2, "0")}`
-        : `场景题 ${String(state.currentQuestion + 1).padStart(2, "0")}`);
-
-    const answerMarkup = question.type === "slider"
-      ? renderSliderQuestion(question, currentSliderValue)
-      : `
-          <div class="answers">
-            ${question.options
-              .map((option, index) => {
-                const chosen = selectedIndex === index ? " is-selected" : "";
-                return `
-                  <button class="answer-card${chosen}" data-action="answer" data-index="${index}" type="button">
-                    <span class="answer-index">${String.fromCharCode(65 + index)}</span>
-                    <span class="answer-text">${escapeHtml(option.text)}</span>
-                  </button>
-                `;
-              })
-              .join("")}
-          </div>
-        `;
-
-    const nextButton = question.type === "slider"
-      ? `<button class="button button-primary" data-action="next-question" type="button">${state.currentQuestion === data.questions.length - 1 ? "查看结果" : "下一题"}</button>`
-      : "";
+      ? `外观题 ${String(state.currentQuestion + 1).padStart(2, "0")}`
+      : `关键词池 ${String(state.currentQuestion + 1).padStart(2, "0")}`;
 
     return `
-      <section class="panel question-panel">
+      <section class="panel question-panel keyword-panel">
         <div class="question-top">
           <div class="progress-shell">
             <div class="progress-bar" style="width:${progress}%"></div>
           </div>
-          <div class="question-index">${state.currentQuestion + 1} / ${data.questions.length}</div>
+          <div class="question-index">${state.currentQuestion + 1} / ${questions.length}</div>
         </div>
         <div class="question-body">
           <p class="eyebrow">${eyebrow}</p>
           <h2 class="question-title">${escapeHtml(question.title)}</h2>
-          ${answerMarkup}
+          <p class="question-note">${escapeHtml(question.hint || "")}</p>
+          <div class="keyword-toolbar">
+            <span class="pill">至少 ${question.minSelections} 个</span>
+            <span class="pill">最多 ${question.maxSelections} 个</span>
+            <span class="pill">${escapeHtml(remainingHint)}</span>
+          </div>
+          <div class="keyword-cloud">
+            ${question.keywords.map((keyword, index) => renderKeywordChip(keyword, index, selected.includes(keyword.id), selected.length >= question.maxSelections)).join("")}
+          </div>
         </div>
         <div class="question-actions">
           <button class="button button-ghost" data-action="go-home" type="button">返回首页</button>
-          <button class="button button-secondary" data-action="prev-question" type="button" ${state.currentQuestion === 0 ? "disabled" : ""}>上一题</button>
-          ${nextButton}
+          <button class="button button-secondary" data-action="prev-question" type="button" ${state.currentQuestion === 0 ? "disabled" : ""}>上一轮</button>
+          <button class="button button-primary" data-action="next-question" type="button" ${selected.length < question.minSelections ? "disabled" : ""}>
+            ${state.currentQuestion === questions.length - 1 ? "查看结果" : "下一轮"}
+          </button>
         </div>
       </section>
     `;
   }
 
-  function sliderSummaryText(question, value) {
-    if (question.sliderMode === "preference") {
-      if (value >= 8) {
-        return `明显偏向：${question.rightLabel}`;
-      }
-      if (value >= 3) {
-        return `稍微偏向：${question.rightLabel}`;
-      }
-      if (value <= -8) {
-        return `明显偏向：${question.leftLabel}`;
-      }
-      if (value <= -3) {
-        return `稍微偏向：${question.leftLabel}`;
-      }
-      return "当前偏中间，两边都能接受";
-    }
-
-    if (value >= 8) {
-      return "非常认同";
-    }
-    if (value >= 4) {
-      return "比较认同";
-    }
-    if (value >= 1) {
-      return "有点认同";
-    }
-    if (value <= -8) {
-      return "非常不认同";
-    }
-    if (value <= -4) {
-      return "比较不认同";
-    }
-    if (value <= -1) {
-      return "有点不认同";
-    }
-    return "当前偏中间";
-  }
-
-  function renderSliderQuestion(question, value) {
-    const leftLabel = question.sliderMode === "preference" ? question.leftLabel : "更不认同";
-    const rightLabel = question.sliderMode === "preference" ? question.rightLabel : "更认同";
-    const scaleHint = question.sliderMode === "preference"
-      ? "往左和往右分别代表两种不同取向，0 表示没有明显偏向。"
-      : "从 -10 到 10 拖动，数值越大代表越认同这句话。";
-
+  function renderKeywordChip(keyword, index, selected, limitReached) {
+    const offsetX = ((index * 17) % 9) - 4;
+    const offsetY = ((index * 13) % 7) - 3;
+    const rotate = ((index * 11) % 7) - 3;
+    const duration = 5.8 + (index % 5) * 0.8;
+    const delay = (index % 6) * 0.35;
+    const disabled = !selected && limitReached ? " disabled" : "";
     return `
-      <div class="slider-panel">
-        <div class="slider-head">
-          <div class="slider-value" data-role="slider-value">${sliderSummaryText(question, value)}</div>
-          <div class="slider-number" data-role="slider-number">${value}</div>
-        </div>
-        <input
-          class="quiz-slider"
-          data-action="slider-answer"
-          type="range"
-          min="${question.min}"
-          max="${question.max}"
-          step="${question.step}"
-          value="${value}"
-        >
-        <div class="slider-labels">
-          <span>${escapeHtml(leftLabel)}</span>
-          <span>0</span>
-          <span>${escapeHtml(rightLabel)}</span>
-        </div>
-        <div class="slider-ticks" aria-hidden="true">
-          <span>-10</span>
-          <span>-5</span>
-          <span>0</span>
-          <span>5</span>
-          <span>10</span>
-        </div>
-        <p class="slider-hint">${escapeHtml(scaleHint)}</p>
-      </div>
+      <button
+        class="keyword-chip${selected ? " is-selected" : ""}"
+        data-action="toggle-keyword"
+        data-keyword-id="${escapeHtml(keyword.id)}"
+        type="button"
+        style="--dx:${offsetX}px; --dy:${offsetY}px; --spin:${rotate}deg; --float-duration:${duration}s; --float-delay:${delay}s"
+        ${disabled}
+      >
+        <span class="keyword-cue">${escapeHtml(keyword.cue)}</span>
+        <span class="keyword-text">${escapeHtml(keyword.text)}</span>
+      </button>
     `;
   }
 
   function renderResult() {
-    if (!state.result) {
+    if (!state.result?.top) {
       return "";
     }
 
     const top = state.result.top;
     const topMatches = state.result.ranked.slice(0, 8);
-    const userVectorChips = dimensions
+    const userVectorChips = dimensionKeys
       .map((key) => {
-        const actualKey = typeof key === "string" ? key : key.key;
-        const dimension = typeof key === "string" ? getDimension(key) : key;
-        const value = state.result.userVector[actualKey];
+        const dimension = getDimension(key);
+        const value = state.result.userVector[key] || 0;
         const label = value >= 0 ? dimension.high : dimension.low;
         return `<span class="pill">${escapeHtml(dimension.name)}：${escapeHtml(label)}</span>`;
+      })
+      .join("");
+    const appearanceChips = appearanceKeys
+      .map((key) => {
+        const axis = getAppearanceAxis(key);
+        const value = state.result.userAppearanceVector[key] || 0;
+        if (Math.abs(value) < 0.12) {
+          return "";
+        }
+        const label = value >= 0 ? axis.high : axis.low;
+        return `<span class="pill">${escapeHtml(axis.name)}：${escapeHtml(label)}</span>`;
       })
       .join("");
 
@@ -582,7 +543,7 @@
           </div>
         </div>
 
-        <div class="pill-row" style="margin-bottom:18px">${userVectorChips}</div>
+        <div class="pill-row result-pills">${userVectorChips}${appearanceChips}</div>
 
         <div class="result-hero">
           <div class="result-figure">
@@ -609,26 +570,22 @@
               <div class="mini-panel">
                 <h4 class="mini-title">为什么会匹配到她</h4>
                 <div class="reason-list">
-                  ${state.result.reasons
-                    .map(
-                      (reason) => `
-                        <div class="reason-item">
-                          <span class="reason-dot"></span>
-                          <span>${escapeHtml(reason)}</span>
-                        </div>
-                      `,
-                    )
-                    .join("")}
+                  ${state.result.reasons.map((reason) => `
+                    <div class="reason-item">
+                      <span class="reason-dot"></span>
+                      <span>${escapeHtml(reason)}</span>
+                    </div>
+                  `).join("")}
                 </div>
               </div>
               <div class="mini-panel">
-                <h4 class="mini-title">人格坐标对比</h4>
+                <h4 class="mini-title">六维坐标对比</h4>
                 ${renderRadar(state.result.userVector, top.vector)}
               </div>
             </div>
 
             <div class="result-actions">
-              <button class="button button-primary" data-action="restart-quiz" type="button">再测一次</button>
+              <button class="button button-primary" data-action="restart-quiz" type="button">重测一次</button>
               <button class="button button-secondary" data-action="copy-result" type="button">复制结果文案</button>
               ${top.vndbCharacterUrl ? `<a class="button button-secondary result-link" href="${top.vndbCharacterUrl}" target="_blank" rel="noreferrer">打开 VNDB 主页</a>` : ""}
               ${top.bangumiCharacterUrl ? `<a class="button button-secondary result-link" href="${top.bangumiCharacterUrl}" target="_blank" rel="noreferrer">打开 Bangumi 主页</a>` : ""}
@@ -642,7 +599,7 @@
         <div class="section-head">
           <div>
             <h2 class="section-title">和你接近的其他女主</h2>
-            <div class="section-note">不是只有一个答案。下面这些，也都和你的心动频率很接近。</div>
+            <div class="section-note">不是只有一个答案。下面这些，也都和你的六维心动频率很接近。</div>
           </div>
         </div>
         <div class="ranking-grid">${rankingCards}</div>
@@ -655,7 +612,7 @@
   function renderGallerySection(openOnHome) {
     const shouldShow = openOnHome || state.showGallery;
     const search = state.gallerySearch.trim().toLowerCase();
-    const filtered = data.heroes.filter((hero) => matchesSearch(hero, search));
+    const filtered = heroes.filter((hero) => matchesSearch(hero, search));
     const visibleHeroes = shouldShow ? filtered.slice(0, state.galleryLimit) : [];
 
     return `
@@ -663,7 +620,7 @@
         <div class="section-head">
           <div>
             <h2 class="section-title">全部可匹配女主</h2>
-            <div class="section-note">你也可以直接当图鉴看。支持按角色名、作品名、标签搜索。</div>
+            <div class="section-note">这里也可以直接当图鉴看。支持按角色名、作品名、标签搜索。</div>
           </div>
         </div>
 
@@ -682,7 +639,6 @@
                   <span class="pill">当前显示 ${visibleHeroes.length} / ${filtered.length}</span>
                 </div>
               </div>
-
               ${
                 visibleHeroes.length
                   ? `
@@ -741,12 +697,12 @@
 
     const grid = levels
       .map((level) => {
-        const points = polygonPoints(levelVector(level, coreDimensionKeys), center, radius);
+        const points = polygonPoints(levelVector(level), center, radius);
         return `<polygon points="${points}" fill="none" stroke="rgba(65,58,74,0.10)" stroke-width="1"></polygon>`;
       })
       .join("");
 
-    const axes = coreDimensionKeys
+    const axes = dimensionKeys
       .map((key, index) => {
         const angle = angleFor(index);
         const point = polarPoint(center, radius + 28, angle);
@@ -759,11 +715,11 @@
       })
       .join("");
 
-    const userPoints = polygonPoints(shiftVector(userVector, coreDimensionKeys), center, radius);
-    const heroPoints = polygonPoints(shiftVector(heroVector, coreDimensionKeys), center, radius);
+    const userPoints = polygonPoints(shiftVector(userVector), center, radius);
+    const heroPoints = polygonPoints(shiftVector(heroVector), center, radius);
 
     return `
-      <svg class="radar" viewBox="0 0 ${size} ${size}" role="img" aria-label="人格维度对比图">
+      <svg class="radar" viewBox="0 0 ${size} ${size}" role="img" aria-label="六维对比图">
         ${grid}
         ${axes}
         <polygon points="${heroPoints}" fill="rgba(230,126,100,0.18)" stroke="rgba(230,126,100,0.78)" stroke-width="2"></polygon>
@@ -772,12 +728,12 @@
     `;
   }
 
-  function shiftVector(vector, keys = dimensionKeys) {
-    return keys.map((key) => ((vector[key] || 0) + 1) / 2);
+  function shiftVector(vector) {
+    return dimensionKeys.map((key) => ((vector[key] || 0) + 1) / 2);
   }
 
-  function levelVector(value, keys = dimensionKeys) {
-    return keys.map(() => value);
+  function levelVector(value) {
+    return dimensionKeys.map(() => value);
   }
 
   function polygonPoints(vector, center, radius) {
@@ -790,7 +746,7 @@
   }
 
   function angleFor(index) {
-    return (-Math.PI / 2) + (index * 2 * Math.PI) / coreDimensionKeys.length;
+    return (-Math.PI / 2) + (index * 2 * Math.PI) / dimensionKeys.length;
   }
 
   function polarPoint(center, distance, angle) {
@@ -808,6 +764,7 @@
     const haystack = [
       hero.originalName,
       hero.name,
+      hero.displayName,
       hero.gameTitle,
       hero.gameTitleCn,
       ...hero.tags,
@@ -819,13 +776,33 @@
     return haystack.includes(search);
   }
 
-  function pickHomePreview(heroes, count) {
-    const buckets = [];
-    const step = Math.max(1, Math.floor(heroes.length / count));
-    for (let index = 0; index < heroes.length && buckets.length < count; index += step) {
-      buckets.push(heroes[index]);
+  function pickRandomHomePreview(list, count) {
+    const pool = [...list];
+    for (let index = pool.length - 1; index > 0; index -= 1) {
+      const swapIndex = Math.floor(Math.random() * (index + 1));
+      [pool[index], pool[swapIndex]] = [pool[swapIndex], pool[index]];
     }
-    return buckets.slice(0, count);
+    return pool.slice(0, count);
+  }
+
+  function toggleKeyword(keywordId) {
+    const question = questions[state.currentQuestion];
+    const selected = getQuestionSelection(state.currentQuestion);
+    const exists = selected.includes(keywordId);
+
+    if (exists) {
+      state.answers[state.currentQuestion] = selected.filter((item) => item !== keywordId);
+      render();
+      return;
+    }
+
+    if (selected.length >= question.maxSelections) {
+      return;
+    }
+
+    selected.push(keywordId);
+    state.answers[state.currentQuestion] = selected;
+    render();
   }
 
   function bindEvents() {
@@ -838,58 +815,26 @@
         state.showGallery = true;
         state.galleryLimit = 20;
         render();
-        const searchInput = document.getElementById("gallerySearch");
-        if (searchInput) {
-          searchInput.focus();
-        }
+        document.getElementById("gallerySearch")?.focus();
       });
     });
 
-    document.querySelectorAll("[data-action='answer']").forEach((button) => {
+    document.querySelectorAll("[data-action='toggle-keyword']").forEach((button) => {
       button.addEventListener("click", () => {
-        const answerIndex = Number(button.getAttribute("data-index"));
-        state.answers[state.currentQuestion] = answerIndex;
-
-        if (state.currentQuestion === data.questions.length - 1) {
-          finishQuiz();
-          return;
-        }
-
-        state.currentQuestion += 1;
-        render();
-      });
-    });
-
-    document.querySelectorAll("[data-action='slider-answer']").forEach((input) => {
-      input.addEventListener("input", (event) => {
-        const question = data.questions[state.currentQuestion];
-        const value = Number(event.target.value);
-        state.answers[state.currentQuestion] = value;
-
-        const valueNode = document.querySelector("[data-role='slider-value']");
-        const numberNode = document.querySelector("[data-role='slider-number']");
-        if (valueNode) {
-          valueNode.textContent = sliderSummaryText(question, value);
-        }
-        if (numberNode) {
-          numberNode.textContent = String(value);
-        }
-        saveState();
+        toggleKeyword(button.getAttribute("data-keyword-id"));
       });
     });
 
     document.querySelectorAll("[data-action='next-question']").forEach((button) => {
       button.addEventListener("click", () => {
-        const question = data.questions[state.currentQuestion];
-        if (question?.type === "slider" && getStoredAnswer(state.currentQuestion) === null) {
-          state.answers[state.currentQuestion] = 0;
+        const question = questions[state.currentQuestion];
+        if (getQuestionSelection(state.currentQuestion).length < question.minSelections) {
+          return;
         }
-
-        if (state.currentQuestion === data.questions.length - 1) {
+        if (state.currentQuestion === questions.length - 1) {
           finishQuiz();
           return;
         }
-
         state.currentQuestion += 1;
         render();
       });
@@ -947,12 +892,15 @@
   function startQuiz() {
     state.view = "quiz";
     state.currentQuestion = 0;
-    state.answers = [];
+    state.answers = questions.map(() => []);
     state.result = null;
     render();
   }
 
   function finishQuiz() {
+    if (!allQuestionsCompleted()) {
+      return;
+    }
     state.result = computeQuizResult();
     state.view = "result";
     state.showGallery = false;
@@ -969,12 +917,12 @@
     const top = state.result.top;
     const topThree = state.result.ranked
       .slice(0, 3)
-      .map((hero, index) => `${index + 1}. ${hero.originalName}（${hero.gameTitleCn || hero.gameTitle}）`)
+      .map((hero, index) => `${index + 1}. ${hero.displayName || hero.originalName}（${hero.gameTitleCn || hero.gameTitle}）`)
       .join("\n");
 
     const text = [
-      "我测到的 Gal 女主匹配结果：",
-      `${top.originalName} / ${top.gameTitleCn || top.gameTitle}`,
+      "我的 Gal 女主匹配结果：",
+      `${top.displayName || top.originalName} / ${top.gameTitleCn || top.gameTitle}`,
       `匹配度：${top.matchPercent}%`,
       state.result.summary,
       "",
@@ -982,19 +930,11 @@
       topThree,
     ].join("\n");
 
-    if (navigator?.clipboard?.writeText) {
-      navigator.clipboard
-        .writeText(text)
-        .then(() => {
-          alert("结果文案已复制，可以直接发到群里。");
-        })
-        .catch(() => {
-          window.prompt("复制失败了，手动复制下面这段：", text);
-        });
-      return;
-    }
-
-    window.prompt("手动复制下面这段结果文案：", text);
+    navigator.clipboard?.writeText(text).then(() => {
+      window.alert("结果文案已复制。");
+    }).catch(() => {
+      window.alert(text);
+    });
   }
 
   function saveState() {
@@ -1026,28 +966,29 @@
     }
   }
 
-  function round(value, digits) {
-    const factor = 10 ** (digits || 0);
-    return Math.round(value * factor) / factor;
+  function escapeHtml(value) {
+    return String(value)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#39;");
   }
 
   function clamp(value, min, max) {
-    return Math.min(Math.max(value, min), max);
+    return Math.min(max, Math.max(min, value));
   }
 
-  function escapeHtml(value) {
-    return String(value || "")
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/'/g, "&#39;");
+  function round(value, precision = 3) {
+    const base = 10 ** precision;
+    return Math.round(value * base) / base;
   }
 
   brandButton?.addEventListener("click", () => {
     state.view = "home";
     render();
+    window.scrollTo({ top: 0, behavior: "smooth" });
   });
 
   render();
-})();
+}());

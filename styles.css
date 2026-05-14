@@ -374,9 +374,100 @@ img {
   line-height: 1.6;
 }
 
+.question-note {
+  margin: -8px 0 18px;
+  color: var(--muted);
+  line-height: 1.75;
+}
+
 .answers {
   display: grid;
   gap: 14px;
+}
+
+.keyword-panel .question-body {
+  padding-bottom: 26px;
+}
+
+.keyword-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.keyword-cloud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: flex-start;
+  padding: 18px;
+  min-height: 320px;
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at 18% 24%, rgba(230, 126, 100, 0.12), transparent 28%),
+    radial-gradient(circle at 86% 18%, rgba(63, 138, 127, 0.12), transparent 22%),
+    rgba(255, 255, 255, 0.76);
+  border: 1px solid rgba(75, 61, 82, 0.12);
+}
+
+.keyword-chip {
+  position: relative;
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+  min-width: 126px;
+  max-width: 220px;
+  padding: 14px 16px;
+  border: 1px solid rgba(75, 61, 82, 0.1);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 12px 24px rgba(85, 64, 64, 0.08);
+  transform: translate(var(--dx, 0), var(--dy, 0)) rotate(var(--spin, 0deg));
+  animation: keywordFloat var(--float-duration, 6s) ease-in-out infinite;
+  animation-delay: var(--float-delay, 0s);
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease, background 0.18s ease;
+}
+
+.keyword-chip:hover:not(:disabled),
+.keyword-chip.is-selected {
+  transform: translate(calc(var(--dx, 0) + 1px), calc(var(--dy, 0) - 4px)) rotate(var(--spin, 0deg));
+  border-color: rgba(63, 138, 127, 0.28);
+  box-shadow: 0 18px 34px rgba(57, 96, 89, 0.14);
+}
+
+.keyword-chip.is-selected {
+  background: linear-gradient(135deg, rgba(255, 249, 244, 0.96), rgba(232, 247, 243, 0.95));
+}
+
+.keyword-chip:disabled {
+  opacity: 0.52;
+  cursor: not-allowed;
+}
+
+.keyword-cue {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(63, 138, 127, 0.1);
+  color: var(--mint);
+  font-size: 0.76rem;
+}
+
+.keyword-text {
+  font-size: 1rem;
+  line-height: 1.4;
+}
+
+@keyframes keywordFloat {
+  0%, 100% {
+    translate: 0 0;
+  }
+  50% {
+    translate: 0 -6px;
+  }
 }
 
 .slider-panel {
@@ -612,6 +703,10 @@ img {
   display: flex;
   flex-wrap: wrap;
   gap: 12px;
+}
+
+.result-pills {
+  margin-bottom: 18px;
 }
 
 .details-box {
